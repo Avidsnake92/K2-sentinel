@@ -1,0 +1,31 @@
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Node (se usi build tools in futuro)
+node_modules/
+package-lock.json
+
+# Composer
+vendor/
+
+# File temporanei PHP
+*.php~
+*.bak
+
+# Log locali
+*.log
+
+# File di test
+/tests/
+phpunit.xml
+
+# File WordPress generati a runtime (non versionate)
+/admin/images/*.quarantine

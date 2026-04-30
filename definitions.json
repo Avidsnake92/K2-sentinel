@@ -1,0 +1,63 @@
+{
+  "version": "1.0.0",
+  "release_date": "2026-04-30",
+  "description": "K2 Sentinel – Definizioni ufficiali di rilevamento malware",
+  "php_patterns": {
+    "eval_base64":        "/eval\\s*\\(\\s*base64_decode/i",
+    "eval_gzinflate":     "/eval\\s*\\(\\s*gzinflate/i",
+    "eval_str_rot":       "/eval\\s*\\(\\s*str_rot13/i",
+    "shell_exec":         "/shell_exec\\s*\\(/i",
+    "exec_call":          "/\\bexec\\s*\\(/i",
+    "system_call":        "/\\bsystem\\s*\\(/i",
+    "passthru":           "/passthru\\s*\\(/i",
+    "preg_replace_e":     "/preg_replace\\s*\\(\\s*['\"].*\\/e/i",
+    "base64_in_php":      "/\\$\\w+\\s*=\\s*base64_decode\\s*\\(/i",
+    "hex_encoded":        "/\\\\x[0-9a-fA-F]{2}\\\\x[0-9a-fA-F]{2}\\\\x[0-9a-fA-F]{2}/i",
+    "obfuscated_var":     "/\\${\\s*['\"]?\\w+['\"]?\\s*}\\s*\\(/i",
+    "create_function":    "/create_function\\s*\\(/i",
+    "wget_curl":          "/\\b(wget|curl)\\s+http/i",
+    "chmod_777":          "/chmod\\s*\\(\\s*\\$\\w+\\s*,\\s*0?777\\s*\\)/i",
+    "file_put_php":       "/file_put_contents\\s*\\(.*\\.php/i",
+    "backdoor_c99":       "/c99|r57|shell\\.php|webshell/i",
+    "index_defacement":   "/<meta\\s+http-equiv\\s*=\\s*[\"']refresh[\"'][^>]*url\\s*=/i",
+    "prepend_inject":     "/^<\\?php\\s+[^\\r\\n]{0,10}(eval|base64_decode|gzinflate|str_rot13)/i",
+    "append_inject":      "/(eval|base64_decode|gzinflate)\\s*\\([^\\)]{5,}\\)\\s*;\\s*\\?>\\s*$/i",
+    "random_var_concat":  "/\\$[a-z]{1,3}\\s*=\\s*[\"'][a-zA-Z0-9+\\/=]{50,}[\"']\\s*;/i",
+    "long_base64_string": "/[\"'][A-Za-z0-9+\\/]{200,}={0,2}[\"']/i",
+    "self_reinstall":     "/(file_get_contents|fopen|curl_exec)\\s*\\(.*http.*\\)\\s*.*eval/is",
+    "add_admin_user":     "/wp_insert_user|wp_create_user.*administrator/i",
+    "update_siteurl":     "/update_option\\s*\\(\\s*[\"']siteurl['\"]/i",
+    "htaccess_autoprepend": "/php_value\\s+auto_prepend_file|php_value\\s+auto_append_file/i",
+    "dropper_download":   "/(file_put_contents|fwrite)\\s*\\(.*,(file_get_contents|curl_exec)/i",
+    "encoded_string_exec": "/\\$[a-zA-Z_]+\\s*=\\s*['\"][A-Za-z0-9+\\/]{100,}={0,2}['\"];\\s*\\$[a-zA-Z_]+\\s*=.*\\(/i"
+  },
+  "db_patterns": {
+    "iframe_inject":    "/<iframe[^>]+src\\s*=\\s*[\"']https?:\\/\\//i",
+    "script_inject":    "/<script[^>]*src\\s*=\\s*[\"']https?:\\/\\//i",
+    "eval_in_content":  "/eval\\s*\\(\\s*base64_decode/i",
+    "hidden_link":      "/display\\s*:\\s*none.*<a\\s+href/i",
+    "spam_keyword":     "/\\b(viagra|cialis|casino|poker|lottery|payday loan)\\b/i",
+    "phishing_url":     "/href\\s*=\\s*[\"'][^\"']*\\.(ru|cn|tk|ml|ga|cf)\\//i",
+    "serialized_eval":  "/s:\\d+:[\"'].*eval\\s*\\(/i",
+    "serialized_b64":   "/s:\\d+:[\"'].*base64_decode/i",
+    "widget_redirect":  "/header\\s*\\(\\s*[\"']Location:/i",
+    "long_b64_in_db":   "/[A-Za-z0-9+\\/]{500,}={0,2}/",
+    "malicious_cron":   "/(curl_exec|shell_exec|exec|system|passthru)\\s*\\(/i",
+    "post_js_redirect": "/window\\.location\\s*=\\s*[\"']https?:\\/\\//i",
+    "courtesy_page":    "/Sito\\s+in\\s+manutenzione|Under\\s+Construction|Hacked\\s+by/i",
+    "hidden_admin_form": "/<input[^>]+type\\s*=\\s*[\"']hidden[\"'][^>]+name\\s*=\\s*[\"']wp_/i",
+    "encoded_option":   "/[A-Za-z0-9+\\/]{300,}={0,2}/",
+    "suspicious_redirect_option": "/http[s]?:\\/\\/[a-z0-9\\-]{3,}\\.(tk|ml|ga|cf|gq|pw|top|xyz|click|loan)\\//"
+  },
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-04-30",
+      "changes": [
+        "Versione iniziale con pattern generici e specifici attacco index-replace",
+        "Pattern per rilevamento admin fantasma e siteurl hijack",
+        "Pattern per serialized PHP malevolo in wp_options"
+      ]
+    }
+  ]
+}
