@@ -157,9 +157,12 @@ function k2s_quarantine_file( array $threat ) {
         return [ 'ok' => false, 'detail' => "File non leggibile: $rel_path" ];
     }
 
-    // Non mettere in quarantena i propri file del plugin
+    // Non mettere in quarantena i propri file del plugin né la quarantena stessa
     if ( strpos( $real, K2S_QUARANTINE_DIR ) === 0 ) {
         return [ 'ok' => false, 'detail' => "File già in quarantena." ];
+    }
+    if ( strpos( $real, realpath( K2S_PATH ) ) === 0 ) {
+        return [ 'ok' => false, 'detail' => "File del plugin K2 Sentinel — non bonificabile." ];
     }
 
     k2s_init_quarantine_dir();
@@ -243,24 +246,25 @@ function k2s_clean_db_threat( array $threat ) {
         $pattern_key = $pm[1];
     }
 
-        // Mappa fallback hardcoded — pattern semplici e funzionanti
-    $fallback_patterns = [
-        'iframe_inject'    => '#<iframe[^>]+src\s*=\s*["']?https?://#i',
-        'script_inject'    => '#<script[^>]*src\s*=\s*["']?https?://#i',
-        'eval_in_content'  => '#eval\s*\(\s*base64_decode#i',
-        'hidden_link'      => '#display\s*:\s*none.{0,200}<a\s+href#is',
-        'spam_keyword'     => '#(viagra|cialis|casino|poker|lottery|payday.?loan)#i',
-        'phishing_url'     => '#href\s*=\s*["']?[^"'\s]*\.(ru|cn|tk|ml|ga|cf)/#i',
-        'serialized_eval'  => '#s:\d+:["'].*eval\s*\(#i',
-        'serialized_b64'   => '#s:\d+:["'].*base64_decode#i',
-        'widget_redirect'  => '#header\s*\(\s*["']?Location:#i',
-        'long_b64_in_db'   => '#[A-Za-z0-9+/]{500,}={0,2}#',
-        'malicious_cron'   => '#(curl_exec|shell_exec|exec|system|passthru)\s*\(#i',
-        'post_js_redirect' => '#window\.location\s*=\s*["']?https?://#i',
-        'courtesy_page'    => '#Sito\s+in\s+manutenzione|Under\s+Construction|Hacked\s+by#i',
-        'siteurl_hijack'   => '#https?://[a-z0-9\-\.]+\.[a-z]{2,}#i',
-        'hidden_admin_form'=> '#<input[^>]+type\s*=\s*["']?hidden["']?[^>]+name\s*=\s*["']?wp_#i',
-    ];
+        // Mappa fallback hardcoded — pattern senza conflitti di virgolette
+    $q  = chr(34) . chr(39); // " e ' come char codes
+    $fallback_patterns = array(
+        "iframe_inject"    => "#<iframe[^>]+src#i",
+        "script_inject"    => "#<script[^>]*src\s*=\s*https?://#i",
+        "eval_in_content"  => "#eval\s*\(\s*base64_decode#i",
+        "hidden_link"      => "#display:\s*none#is",
+        "spam_keyword"     => "#viagra|cialis|casino|payday#i",
+        "phishing_url"     => "#\.(?:ru|cn|tk|ml|ga|cf)/#i",
+        "serialized_eval"  => "#s:\d+:.*eval\s*\(#i",
+        "serialized_b64"   => "#s:\d+:.*base64_decode#i",
+        "widget_redirect"  => "#Location:\s*https?://#i",
+        "long_b64_in_db"   => "#[A-Za-z0-9+/]{500,}={0,2}#",
+        "malicious_cron"   => "#curl_exec|shell_exec|passthru#i",
+        "post_js_redirect" => "#window\.location\s*=#i",
+        "courtesy_page"    => "#Sito in manutenzione|Under Construction|Hacked by#i",
+        "siteurl_hijack"   => "#https?://[a-z0-9\-\.]+\.[a-z]{2,}#i",
+        "hidden_admin_form"=> "#type.*hidden.*name.*wp_#is",
+    );
 
     // Prima cerca nelle definizioni attive, poi nel fallback
     $defs        = k2s_get_active_definitions();

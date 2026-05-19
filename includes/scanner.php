@@ -104,6 +104,12 @@ function k2s_scan_php_files() {
     ];
     $last_scan_ts = get_option( 'k2s_last_scan_ts', 0 );
 
+    // Percorsi da escludere sempre (plugin stesso + quarantena)
+    $exclude_paths = [
+        realpath( K2S_PATH ),           // il plugin K2 Sentinel stesso
+        realpath( K2S_QUARANTINE_DIR ), // cartella quarantena
+    ];
+
     // Estensioni da analizzare
     $scan_exts = [ 'php', 'html', 'htm', 'js', 'htaccess' ];
 
@@ -130,6 +136,17 @@ function k2s_scan_php_files() {
 
             $path    = $file->getRealPath();
             $rel     = str_replace( ABSPATH, '', $path );
+
+            // Salta i file del plugin stesso e della quarantena
+            $skip = false;
+            foreach ( $exclude_paths as $excl ) {
+                if ( $excl && strpos( $path, $excl ) === 0 ) {
+                    $skip = true;
+                    break;
+                }
+            }
+            if ( $skip ) continue;
+
             $content = @file_get_contents( $path );
             if ( $content === false ) continue;
 
@@ -209,6 +226,11 @@ function k2s_scan_php_files() {
 //  a meno che non li abbia messi l'attaccante)
 function k2s_scan_unexpected_index_files() {
     $threats    = [];
+
+    // Escludi sempre la cartella del plugin e quarantena
+    $plugin_path     = realpath( K2S_PATH );
+    $quarantine_path = realpath( K2S_QUARANTINE_DIR );
+
     $check_dirs = [
         WP_CONTENT_DIR,
         WP_CONTENT_DIR . '/themes',
