@@ -237,19 +237,38 @@ function k2s_clean_db_threat( array $threat ) {
         return [ 'ok' => false, 'detail' => "Tabella non gestita: $table_raw" ];
     }
 
-    // Recupera le righe con il pattern malevolo
+    // Estrai il pattern_key dal dettaglio
     $pattern_key = '';
     if ( preg_match( '/Pattern \[([^\]]+)\]/i', $detail, $pm ) ) {
         $pattern_key = $pm[1];
     }
 
-    // Carica i pattern attivi
-    $defs = k2s_get_active_definitions();
+    // Mappa fallback hardcoded — usata se le definizioni remote non hanno il pattern
+    $fallback_patterns = [
+        'iframe_inject'    => '/<iframe[^>]+src\s*=\s*["\']{0,1}https?:\/\//i',
+        'script_inject'    => '/<script[^>]*src\s*=\s*["\']{0,1}https?:\/\//i',
+        'eval_in_content'  => '/eval\s*\(\s*base64_decode/i',
+        'hidden_link'      => '/display\s*:\s*none.*<a\s+href/is',
+        'spam_keyword'     => '/\b(viagra|cialis|casino|poker|lottery|payday.?loan)\b/i',
+        'phishing_url'     => '/href\s*=\s*["\']{0,1}[^"\'\s]*\.(ru|cn|tk|ml|ga|cf)\//i',
+        'serialized_eval'  => '/s:\d+:["\']{0,1}.*eval\s*\(/i',
+        'serialized_b64'   => '/s:\d+:["\']{0,1}.*base64_decode/i',
+        'widget_redirect'  => '/header\s*\(\s*["\']{0,1}Location:/i',
+        'long_b64_in_db'   => '/[A-Za-z0-9+\/]{500,}={0,2}/',
+        'malicious_cron'   => '/(curl_exec|shell_exec|exec|system|passthru)\s*\(/i',
+        'post_js_redirect' => '/window\.location\s*=\s*["\']{0,1}https?:\/\//i',
+        'courtesy_page'    => '/Sito\s+in\s+manutenzione|Under\s+Construction|Hacked\s+by/i',
+        'siteurl_hijack'   => '/https?:\/\/[a-z0-9\-\.]+\.[a-z]{2,}/i',
+        'hidden_admin_form'=> '/<input[^>]+type\s*=\s*["\']{0,1}hidden["\']{0,1}[^>]+name\s*=\s*["\']{0,1}wp_/i',
+    ];
+
+    // Prima cerca nelle definizioni attive, poi nel fallback
+    $defs        = k2s_get_active_definitions();
     $db_patterns = $defs['db_patterns'] ?? [];
-    $regex = $db_patterns[ $pattern_key ] ?? null;
+    $regex       = $db_patterns[ $pattern_key ] ?? $fallback_patterns[ $pattern_key ] ?? null;
 
     if ( ! $regex ) {
-        return [ 'ok' => false, 'detail' => "Pattern regex non trovato per: $pattern_key" ];
+        return [ 'ok' => false, 'detail' => "Pattern regex non trovato per: [$pattern_key] — aggiungerlo alle definizioni" ];
     }
 
     // Determina la colonna chiave primaria

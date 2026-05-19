@@ -58,6 +58,13 @@ function k2s_check_core_integrity() {
         }
 
         $actual_md5 = md5_file( $abs_path );
+
+        // version.php cambia legittimamente a ogni aggiornamento WP
+        // — il checksum non corrisponde mai subito dopo un update
+        if ( in_array( $rel_path, [ 'wp-includes/version.php', 'wp-includes/load.php' ], true ) ) {
+            continue;
+        }
+
         if ( $actual_md5 !== $expected_md5 ) {
             $modified[] = $rel_path;
             $threats[] = [
@@ -114,9 +121,9 @@ function k2s_check_core_integrity() {
 
                 // 3. File nei percorsi di build noti (generati automaticamente da WP)
                 $known_generated = [
+                    // wp-includes
                     'wp-includes/css/dist/',
                     'wp-includes/js/dist/',
-                    'wp-admin/css/colors/',
                     'wp-includes/certificates/',
                     'wp-includes/pomo/',
                     'wp-includes/sodium_compat/',
@@ -126,6 +133,17 @@ function k2s_check_core_integrity() {
                     'wp-includes/PHPMailer/',
                     'wp-includes/Requests/',
                     'wp-includes/IXR/',
+                    'wp-includes/images/',
+                    'wp-includes/fonts/',
+                    'wp-includes/blocks/',
+                    // wp-admin — tutte le sottocartelle hanno index.php stub
+                    'wp-admin/css/',
+                    'wp-admin/js/',
+                    'wp-admin/images/',
+                    'wp-admin/includes/',
+                    'wp-admin/network/',
+                    'wp-admin/user/',
+                    'wp-admin/maint/',
                 ];
                 foreach ( $known_generated as $path ) {
                     if ( strpos( $rel, $path ) === 0 ) {
