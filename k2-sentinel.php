@@ -3,14 +3,14 @@
  * Plugin Name: K2 Sentinel – Antivirus & Firewall
  * Plugin URI:  https://k2tech.it/k2-sentinel
  * Description: Antivirus, Firewall, 2FA, Traffic Monitor e Integrità Core per WordPress.
- * Version:     1.3.0
+ * Version:     1.3.2
  * Author:      K2Tech
  * License:     GPL-2.0+
  * Text Domain: k2-sentinel
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'K2_SENTINEL_VERSION', '1.3.0' );
+define( 'K2_SENTINEL_VERSION', '1.3.2' );
 define( 'K2_SENTINEL_PATH',    plugin_dir_path( __FILE__ ) );
 define( 'K2_SENTINEL_URL',     plugin_dir_url( __FILE__ ) );
 define( 'K2S_PATH',            K2_SENTINEL_PATH );
@@ -46,19 +46,25 @@ function k2s_deactivate() {
 }
 
 // ─── Scansione oraria ─────────────────────────────────────────────
-add_action( 'k2s_hourly_scan', 'k2s_run_full_scan' );
+add_action( 'k2s_hourly_scan', function() { k2s_run_full_scan( true ); } );
 
-function k2s_run_full_scan() {
-    $threats = array_merge(
+function k2s_run_full_scan( $include_core_integrity = false ) {
+    // k2s_check_core_integrity() fa richieste HTTP a wordpress.org
+    // — la includiamo solo nel cron (background), non nella scansione manuale AJAX
+    $parts = [
         k2s_scan_php_files(),
         k2s_scan_database(),
-        k2s_check_core_integrity()
-    );
+    ];
+    if ( $include_core_integrity && function_exists( 'k2s_check_core_integrity' ) ) {
+        $parts[] = k2s_check_core_integrity();
+    }
+    $threats = array_merge( ...$parts );
 
     foreach ( $threats as $t ) {
         k2s_log( $t['level'], $t['type'], $t['detail'] );
-        // Alert immediato per tipi ultra-critici
-        k2s_send_critical_alert( $t['type'], $t['detail'] );
+        if ( function_exists( 'k2s_send_critical_alert' ) ) {
+            k2s_send_critical_alert( $t['type'], $t['detail'] );
+        }
     }
 
     update_option( 'k2s_last_scan',    current_time( 'mysql' ) );

@@ -128,8 +128,24 @@ function k2s_scan_php_files() {
 
             // HTML/HTM
             if ( in_array( $ext, [ 'html', 'htm' ], true ) ) {
+                // Salta file HTML legittimi dei plugin (changelog, release notes, docs)
+                $html_whitelist = [
+                    'release_log.html', 'changelog.html', 'readme.html',
+                    'license.html', 'credits.html', 'CHANGELOG.html',
+                    'README.html', 'INSTALL.html',
+                ];
+                if ( in_array( $basename, $html_whitelist, true ) ) continue;
+                // Salta cartelle di documentazione plugin
+                if ( preg_match( '#/plugins/[^/]+/(docs?|documentation|readme|changelog|release)/#i', $filepath ) ) continue;
+
                 if ( preg_match( '/<\?php/i', $file_source ) ) {
                     $threats[] = [ 'level' => 'critical', 'type' => 'php_in_html', 'detail' => "PHP in file HTML: $rel_path" ];
+                }
+                // Verifica defacement solo fuori dalle cartelle plugin note
+                if ( ! preg_match( '#/plugins/#', $filepath ) ) {
+                    if ( preg_match( '/Sito in manutenzione|Under Construction|Hacked by/i', $file_source ) ) {
+                        $threats[] = [ 'level' => 'critical', 'type' => 'index_defacement', 'detail' => "Possibile defacement: $rel_path" ];
+                    }
                 }
                 continue;
             }
