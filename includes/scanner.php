@@ -23,8 +23,11 @@ $K2S_PHP_PATTERNS = [
     'backdoor_c99'     => '/c99shell|r57shell|webshell\.php/i',
     'index_defacement' => '/<meta\s+http-equiv\s*=\s*["\']refresh["\'][^>]*url\s*=/i',
     'prepend_inject'   => '/^<\?php\s+[^\r\n]{0,10}(eval|base64_decode|gzinflate)/i',
-    'long_base64'      => '/[A-Za-z0-9+\/]{300,}={0,2}/',
-    'add_admin_user'   => '/wp_insert_user|wp_create_user.*administrator/i',
+    // long_base64 rimosso — troppi falsi positivi su plugin legittimi (backup, crypto)
+    // viene rilevato solo se combinato con eval() — vedi 'eval_base64'
+    // 'long_base64' => '/[A-Za-z0-9+\/]{300,}={0,2}/',
+    // add_admin_user rimosso — troppi falsi positivi
+    // 'add_admin_user' => '/wp_insert_user|wp_create_user.*administrator/i',
 ];
 
 $K2S_DB_PATTERNS = [

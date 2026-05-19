@@ -27,7 +27,7 @@ function k2s_get_fallback_db_patterns() {
         "courtesy_page"    => "#Sito in manutenzione|Under Construction|Hacked by#i",
         "siteurl_hijack"   => "#https?://[a-z0-9\-\.]+\.[a-z]{2,}#i",
         "hidden_admin_form"=> "#type.*hidden.*name.*wp_#is",
-        "encoded_option"   => "#[A-Za-z0-9+/]{300,}={0,2}#",
+        // encoded_option rimosso dal fallback — troppo generico, colpisce plugin legittimi
     );
 }
 
