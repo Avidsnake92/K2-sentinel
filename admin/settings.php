@@ -110,6 +110,73 @@ $next_def_update = wp_next_scheduled( 'k2s_daily_definitions_update' );
             </div>
         </div>
 
+
+        <!-- Aggiornamento plugin da GitHub -->
+        <div class="wps-section" style="border-left:3px solid var(--k2-blue,#1558A8);background:#f0f6ff;">
+            <h2 class="k2s-section__title">Aggiornamento Plugin</h2>
+            <div id="k2s-update-status" style="margin-bottom:16px;">
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+                    <div class="k2s-def-card">
+                        <div class="k2s-def-card__label">Versione installata</div>
+                        <div class="k2s-def-card__value"><?php echo K2_SENTINEL_VERSION; ?></div>
+                    </div>
+                    <div class="k2s-def-card">
+                        <div class="k2s-def-card__label">Ultima versione GitHub</div>
+                        <div class="k2s-def-card__value" id="k2s-latest-version">—</div>
+                    </div>
+                    <div class="k2s-def-card">
+                        <div class="k2s-def-card__label">Stato</div>
+                        <div class="k2s-def-card__value" id="k2s-update-state" style="font-size:13px;">Non verificato</div>
+                    </div>
+                </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <button type="button" id="k2s-check-update" class="k2s-btn k2s-btn--secondary">Controlla aggiornamenti</button>
+                <a id="k2s-go-update" href="<?php echo admin_url('update-core.php'); ?>" class="k2s-btn" style="display:none;">Aggiorna ora</a>
+                <span id="k2s-update-msg" style="font-size:12px;color:var(--k2-muted);font-family:var(--k2-mono);"></span>
+            </div>
+            <p style="font-size:12px;color:var(--k2-muted);margin:12px 0 0;">
+                Gli aggiornamenti vengono scaricati direttamente da
+                <a href="https://github.com/Avidsnake92/k2-sentinel/releases" target="_blank" style="color:var(--k2-red);">GitHub Releases</a>
+                e installati tramite il sistema nativo di WordPress — nessuno ZIP manuale necessario.
+            </p>
+        </div>
+
+<script>
+jQuery(function($){
+    $('#k2s-check-update').on('click', function(){
+        var $btn = $(this);
+        var $msg = $('#k2s-update-msg');
+        $btn.prop('disabled', true).text('Controllo in corso…');
+        $msg.text('');
+
+        $.post(k2s_ajax.ajax_url, {
+            action: 'k2s_force_update_check',
+            nonce:  k2s_ajax.nonce
+        }, function(r){
+            if(r.success){
+                var d = r.data;
+                $('#k2s-latest-version').text(d.latest);
+                if(d.has_update){
+                    $('#k2s-update-state').css('color','var(--k2-red)').text('Aggiornamento disponibile');
+                    $('#k2s-go-update').show();
+                    $msg.text('Versione ' + d.latest + ' disponibile — clicca "Aggiorna ora"');
+                } else {
+                    $('#k2s-update-state').css('color','var(--k2-green)').text('Aggiornato');
+                    $('#k2s-go-update').hide();
+                    $msg.text('Sei già alla versione più recente.');
+                }
+            } else {
+                $('#k2s-update-state').text('Errore controllo');
+                $msg.text('Impossibile contattare GitHub. Riprova.');
+            }
+        }).always(function(){
+            $btn.prop('disabled', false).text('Controlla aggiornamenti');
+        });
+    });
+});
+</script>
+
         <button type="submit" name="k2s_save_settings" class="k2s-btn k2s-btn--primary">Salva Impostazioni</button>
     </form>
 </div>

@@ -18,6 +18,29 @@ define( 'K2S_GITHUB_USER',   'Avidsnake92' );
 define( 'K2S_GITHUB_REPO',   'k2-sentinel' );
 define( 'K2S_PLUGIN_SLUG',   'k2-sentinel/k2-sentinel.php' );
 define( 'K2S_GITHUB_API',    'https://api.github.com/repos/' . K2S_GITHUB_USER . '/' . K2S_GITHUB_REPO . '/releases/latest' );
+define( 'K2S_PLUGIN_SLUG',   'k2-sentinel/k2-sentinel.php' );
+
+/**
+ * Normalizza qualsiasi formato di tag GitHub in un version_compare-safe string.
+ * Esempi:
+ *   K2-Sentinel_v1.0  → 1.0.0
+ *   v1.2.0            → 1.2.0
+ *   release-2.1       → 2.1.0
+ *   1.3               → 1.3.0
+ */
+function k2s_normalize_version( $tag ) {
+    // Estrai solo la parte numerica con punti
+    if ( preg_match( '/(\d+\.\d+(?:\.\d+)?)/', $tag, $m ) ) {
+        $ver   = $m[1];
+        $parts = explode( '.', $ver );
+        // Assicura sempre tre parti (major.minor.patch)
+        while ( count( $parts ) < 3 ) {
+            $parts[] = '0';
+        }
+        return implode( '.', $parts );
+    }
+    return '0.0.0';
+}
 
 class K2S_Updater {
 
@@ -44,7 +67,7 @@ class K2S_Updater {
         $release = $this->get_latest_release();
         if ( ! $release || is_wp_error( $release ) ) return $transient;
 
-        $latest_version = ltrim( $release['tag_name'], 'v' );
+        $latest_version = k2s_normalize_version( $release['tag_name'] );
 
         if ( version_compare( $latest_version, K2_SENTINEL_VERSION, '>' ) ) {
             $download_url = $release['zipball_url'] ?? '';
@@ -83,7 +106,7 @@ class K2S_Updater {
         $release = $this->get_latest_release();
         if ( ! $release || is_wp_error( $release ) ) return $result;
 
-        $latest_version = ltrim( $release['tag_name'], 'v' );
+        $latest_version = k2s_normalize_version( $release['tag_name'] );
         $changelog      = $this->parse_changelog( $release['body'] ?? '' );
         $download_url   = $release['zipball_url'] ?? '';
 
@@ -145,7 +168,7 @@ class K2S_Updater {
         $release = $this->get_latest_release();
         if ( ! $release || is_wp_error( $release ) ) return;
 
-        $latest = ltrim( $release['tag_name'], 'v' );
+        $latest = k2s_normalize_version( $release['tag_name'] );
         if ( ! version_compare( $latest, K2_SENTINEL_VERSION, '>' ) ) return;
 
         echo '<div class="notice notice-warning is-dismissible">';
@@ -226,7 +249,7 @@ add_action( 'wp_ajax_k2s_force_update_check', function() {
     }
 
     $data    = json_decode( wp_remote_retrieve_body( $response ), true );
-    $latest  = ltrim( $data['tag_name'] ?? '0.0.0', 'v' );
+    $latest  = k2s_normalize_version( $data['tag_name'] ?? '0.0.0' );
     $current = K2_SENTINEL_VERSION;
     $has_update = version_compare( $latest, $current, '>' );
 

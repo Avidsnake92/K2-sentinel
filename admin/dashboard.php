@@ -82,6 +82,25 @@ function k2s_icon($name, $size=16) {
 
     <div id="k2s-scan-result" style="display:none;" class="k2s-result"></div>
 
+    <?php if ( $last_threats > 0 ) : ?>
+    <div class="k2s-section" style="border-left:3px solid var(--k2-red);background:#FEF8F7;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+            <div>
+                <div style="font-size:14px;font-weight:600;color:var(--k2-red);margin-bottom:4px;">
+                    <?php echo $last_threats; ?> minacce rilevate nell'ultima scansione
+                </div>
+                <div style="font-size:12px;color:var(--k2-muted);">
+                    Avvia la bonifica per mettere in quarantena i file e pulire il database automaticamente.
+                </div>
+            </div>
+            <button id="k2s-remediate-now" class="k2s-btn" style="flex-shrink:0;">
+                Bonifica ora
+            </button>
+        </div>
+        <div id="k2s-remediate-result" style="display:none;margin-top:14px;" class="k2s-result"></div>
+    </div>
+    <?php endif; ?>
+
     <div class="k2s-section">
         <h2 class="k2s-section__title">
             <?php echo k2s_icon('list'); ?>

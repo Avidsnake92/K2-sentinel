@@ -52,6 +52,57 @@
         });
     });
 
+    // ── Bonifica manuale ──────────────────────────────────────────
+    $(document).on('click', '#k2s-remediate-now', function () {
+        var $btn = $(this);
+        var $res = $('#k2s-remediate-result');
+        $btn.prop('disabled', true).text('Bonifica in corso…');
+        $res.hide().removeClass('ok threats');
+
+        $.ajax({
+            url:  k2s_ajax.ajax_url,
+            type: 'POST',
+            data: { action: 'k2s_manual_remediate', nonce: k2s_ajax.nonce },
+            success: function (res) {
+                if ( res.success ) {
+                    var d = res.data;
+                    if ( d.total === 0 && d.processed === 0 ) {
+                        $res.addClass('ok').html(
+                            '<pre style="margin:0;">' + (d.message || 'Nessuna minaccia bonificabile nel log.') + '\n' +
+                            (d.hint ? d.hint : 'Avvia una scansione manuale per rilevare nuove minacce.') + '</pre>'
+                        ).show();
+                    } else {
+                        var html = 'Minacce processate  : ' + (d.processed || 0) + '\n';
+                        html    += 'File in quarantena  : ' + d.quarantined + '\n';
+                        html    += 'Record DB puliti    : ' + d.db_cleaned + '\n';
+                        if ( d.skipped > 0 ) html += 'Saltati (info-only) : ' + d.skipped + '\n';
+                        if ( d.failed > 0 ) {
+                            html += 'Falliti             : ' + d.failed + '\n';
+                            if ( d.failed_details && d.failed_details.length ) {
+                                html += '\nDettaglio falliti:\n';
+                                $.each( d.failed_details, function(i, det) {
+                                    html += '  • ' + det + '\n';
+                                });
+                            }
+                        }
+                        $res.addClass( d.failed > 0 && d.total === 0 ? 'threats' : 'ok' )
+                            .html( '<pre style="margin:0;">' + html + '</pre>' ).show();
+                    }
+                } else {
+                    $res.addClass('threats').html('<pre style="margin:0;">Errore durante la bonifica. Controlla i log.</pre>').show();
+                }
+            },
+            error: function (xhr) {
+                $res.addClass('threats').html(
+                    '<pre style="margin:0;">Errore di connessione: ' + xhr.status + ' ' + xhr.statusText + '</pre>'
+                ).show();
+            },
+            complete: function () {
+                $btn.prop('disabled', false).text('Bonifica ora');
+            },
+        });
+    });
+
     // ── Aggiornamento definizioni ─────────────────────────────────
     $('#k2s-update-defs').on('click', function () {
         var $btn = $(this);

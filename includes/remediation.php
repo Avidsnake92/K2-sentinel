@@ -48,8 +48,27 @@ function k2s_auto_remediate( array $threats ) {
     foreach ( $threats as $threat ) {
         $type = $threat['type'] ?? '';
 
-        // ── File PHP/HTML → quarantena ──────────────────────────
+        // ── Tipi da saltare (solo informativi, non bonificabili) ──
         if ( in_array( $type, [
+            'core_modified_file', 'core_missing_file',
+            '2fa_failed', '2fa_success', 'brute_force',
+            'ghost_admin', 'suspicious_admin_registration',
+        ], true ) ) {
+            $report['skipped'][] = $threat['detail'] ?? $type;
+            continue;
+        }
+
+        // ── File extra in cartella core → quarantena ─────────────
+        if ( $type === 'core_extra_file' ) {
+            $result = k2s_quarantine_file( $threat );
+            if ( $result['ok'] ) {
+                $report['quarantined'][] = $result;
+            } else {
+                $report['failed'][] = $result;
+            }
+
+        // ── File PHP/HTML → quarantena ──────────────────────────
+        } elseif ( in_array( $type, [
             'php_malware', 'php_in_html', 'index_defacement',
             'html_redirect', 'htaccess_redirect', 'htaccess_autoprepend',
             'index_php_redirect', 'index_php_malware', 'unexpected_index_file',
@@ -110,10 +129,15 @@ function k2s_quarantine_file( array $threat ) {
     $detail  = $threat['detail'] ?? '';
     $rel_path = '';
 
-    // Prova a estrarre il path dal formato "... in: path/to/file.php"
-    if ( preg_match( '/in:\s*(.+)$/i', $detail, $m ) ) {
+    // Supporta vari formati di dettaglio:
+    // "Pattern [x] in: wp-content/..."       → scanner generico
+    // "File non ufficiale trovato in cartella core: wp-includes/..."  → core_extra_file
+    // "File messo in quarantena: path → dest" → già bonificato
+    if ( preg_match( '/cartella core:\s*(.+)$/i', $detail, $m ) ) {
         $rel_path = trim( $m[1] );
-    } elseif ( preg_match( '/trovato.*?:\s*(.+)$/i', $detail, $m ) ) {
+    } elseif ( preg_match( '/in:\s*(.+?)(?:\s*\(|\s*→|$)/i', $detail, $m ) ) {
+        $rel_path = trim( $m[1] );
+    } elseif ( preg_match( '/trovato.*?:\s*(.+?)(?:\s*\(|$)/i', $detail, $m ) ) {
         $rel_path = trim( $m[1] );
     }
 
@@ -182,22 +206,35 @@ function k2s_clean_db_threat( array $threat ) {
     global $wpdb;
     $detail = $threat['detail'] ?? '';
 
-    // Formato: "Pattern [xxx] trovato in wp_tablename.column"
+    // Formato: "Pattern [xxx] trovato in QUALSIASI_PREFIX_tablename.column"
+    // Funziona con qualsiasi prefisso WP (wp_, p00ZTB_, ecc.)
     if ( ! preg_match( '/trovato in\s+(\S+)\.(\S+)/i', $detail, $m ) ) {
         return [ 'ok' => false, 'detail' => "Tabella/colonna non parsabile: $detail" ];
     }
 
-    $table  = $m[1];
-    $column = $m[2];
+    $table_raw = $m[1];
+    $column    = $m[2];
 
-    // Whitelist tabelle modificabili
-    $allowed_tables = [
-        $wpdb->posts, $wpdb->postmeta, $wpdb->options,
-        $wpdb->comments, $wpdb->commentmeta,
+    // Mappa nome base → nome completo con prefisso WP reale
+    $base_map = [
+        'posts'       => $wpdb->posts,
+        'postmeta'    => $wpdb->postmeta,
+        'options'     => $wpdb->options,
+        'comments'    => $wpdb->comments,
+        'commentmeta' => $wpdb->commentmeta,
     ];
 
-    if ( ! in_array( $table, $allowed_tables, true ) ) {
-        return [ 'ok' => false, 'detail' => "Tabella non gestita: $table" ];
+    // Risolvi prefisso personalizzato: p00ZTB_options → options → $wpdb->options
+    $table = null;
+    foreach ( $base_map as $base => $full ) {
+        if ( substr( $table_raw, -strlen( $base ) ) === $base ) {
+            $table = $full;
+            break;
+        }
+    }
+
+    if ( ! $table ) {
+        return [ 'ok' => false, 'detail' => "Tabella non gestita: $table_raw" ];
     }
 
     // Recupera le righe con il pattern malevolo
@@ -511,4 +548,89 @@ function k2s_get_db_backups( $limit = 50 ) {
     return $wpdb->get_results(
         $wpdb->prepare( "SELECT * FROM $table ORDER BY backup_time DESC LIMIT %d", $limit )
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  AJAX – bonifica manuale (agisce sui log esistenti)
+// ═══════════════════════════════════════════════════════════════════
+add_action( 'wp_ajax_k2s_manual_remediate', 'k2s_ajax_manual_remediate' );
+
+function k2s_ajax_manual_remediate() {
+    check_ajax_referer( 'k2s_nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'sentinel_log';
+
+    // Tipi solo informativi — non bonificabili
+    $skip_types = [
+        'core_modified_file', 'core_missing_file',
+        '2fa_failed', '2fa_success', 'brute_force',
+        'remediation', 'definitions_update', 'hardening_updated',
+        'quarantined', 'db_cleaned', 'cron_removed',
+        'quarantine_restored', 'quarantine_deleted',
+        'ghost_admin', 'suspicious_admin_registration',
+        'core_integrity', 'suspicious_cron',
+    ];
+
+    $skip_in = implode( ',', array_map( fn($t) => "'$t'", $skip_types ) );
+
+    // Leggi le ultime minacce bonificabili dal log
+    $logs = $wpdb->get_results(
+        "SELECT * FROM $table
+         WHERE level IN ('critical','warning')
+         AND type NOT IN ($skip_in)
+         ORDER BY log_time DESC
+         LIMIT 500",
+        ARRAY_A
+    );
+
+    if ( empty( $logs ) ) {
+        wp_send_json_success( [
+            'message'  => 'Nessuna minaccia bonificabile trovata nel log.',
+            'total'    => 0,
+            'hint'     => 'Avvia una scansione manuale per rilevare nuove minacce.',
+        ] );
+        return;
+    }
+
+    // Deduplicazione per tipo+dettaglio
+    $seen           = [];
+    $unique_threats = [];
+    foreach ( $logs as $log ) {
+        $key = $log['type'] . '||' . $log['detail'];
+        if ( ! isset( $seen[ $key ] ) ) {
+            $seen[ $key ]     = true;
+            $unique_threats[] = [
+                'level'  => $log['level'],
+                'type'   => $log['type'],
+                'detail' => $log['detail'],
+            ];
+        }
+    }
+
+    $report = k2s_auto_remediate( $unique_threats );
+
+    $quarantined = count( $report['quarantined'] ?? [] );
+    $db_cleaned  = count( $report['db_cleaned']  ?? [] );
+    $failed      = count( $report['failed']      ?? [] );
+    $skipped     = count( $report['skipped']     ?? [] );
+    $total       = $quarantined + $db_cleaned;
+
+    // Dettaglio falliti per debug
+    $failed_details = [];
+    foreach ( $report['failed'] ?? [] as $f ) {
+        $failed_details[] = $f['detail'] ?? json_encode( $f );
+    }
+
+    wp_send_json_success( [
+        'total'          => $total,
+        'quarantined'    => $quarantined,
+        'db_cleaned'     => $db_cleaned,
+        'failed'         => $failed,
+        'failed_details' => $failed_details,
+        'skipped'        => $skipped,
+        'processed'      => count( $unique_threats ),
+        'message'        => "$total bonificati su " . count( $unique_threats ) . " minacce uniche.",
+    ] );
 }

@@ -89,14 +89,59 @@ function k2s_check_core_integrity() {
             $rel = str_replace( $abspath . DIRECTORY_SEPARATOR, '', $file->getRealPath() );
             $rel = str_replace( DIRECTORY_SEPARATOR, '/', $rel );
 
-            // Se non è nei checksum ufficiali, è sospetto
+            // Se non è nei checksum ufficiali, verifica se è un file legittimo WP
             if ( ! isset( $checksums[ $rel ] ) ) {
-                $threats[] = [
-                    'level'  => 'critical',
-                    'type'   => 'core_extra_file',
-                    'detail' => "File non ufficiale trovato in cartella core: $rel",
+                $is_legitimate = false;
+
+                // 1. WordPress mette index.php stub (Silence is golden) in ogni cartella
+                if ( basename( $rel ) === 'index.php' ) {
+                    $file_content = @file_get_contents( $file->getRealPath() );
+                    $trimmed      = trim( $file_content ?? '' );
+                    if ( strlen( $trimmed ) < 60 &&
+                         ( strpos( $trimmed, '<?php' ) === 0 ) &&
+                         ( strpos( $trimmed, 'eval' ) === false ) &&
+                         ( strpos( $trimmed, 'base64' ) === false )
+                    ) {
+                        $is_legitimate = true; // stub vuoto o silence
+                    }
+                }
+
+                // 2. Cartelle con ID numerico (asset versioning: /pomo/325273/, /css/dist/995685/)
+                //    WP genera queste cartelle per il cache-busting degli asset — sono normali
+                if ( preg_match( '/\/\d{4,}\//', $rel ) ) {
+                    $is_legitimate = true;
+                }
+
+                // 3. File nei percorsi di build noti (generati automaticamente da WP)
+                $known_generated = [
+                    'wp-includes/css/dist/',
+                    'wp-includes/js/dist/',
+                    'wp-admin/css/colors/',
+                    'wp-includes/certificates/',
+                    'wp-includes/pomo/',
+                    'wp-includes/sodium_compat/',
+                    'wp-includes/Text/',
+                    'wp-includes/ID3/',
+                    'wp-includes/SimplePie/',
+                    'wp-includes/PHPMailer/',
+                    'wp-includes/Requests/',
+                    'wp-includes/IXR/',
                 ];
-                $extra[] = $rel;
+                foreach ( $known_generated as $path ) {
+                    if ( strpos( $rel, $path ) === 0 ) {
+                        $is_legitimate = true;
+                        break;
+                    }
+                }
+
+                if ( ! $is_legitimate ) {
+                    $threats[] = [
+                        'level'  => 'critical',
+                        'type'   => 'core_extra_file',
+                        'detail' => "File non ufficiale trovato in cartella core: $rel",
+                    ];
+                    $extra[] = $rel;
+                }
             }
         }
     }
