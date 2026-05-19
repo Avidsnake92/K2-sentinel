@@ -243,23 +243,23 @@ function k2s_clean_db_threat( array $threat ) {
         $pattern_key = $pm[1];
     }
 
-    // Mappa fallback hardcoded — usata se le definizioni remote non hanno il pattern
+        // Mappa fallback hardcoded — pattern semplici e funzionanti
     $fallback_patterns = [
-        'iframe_inject'    => '/<iframe[^>]+src\s*=\s*["\']{0,1}https?:\/\//i',
-        'script_inject'    => '/<script[^>]*src\s*=\s*["\']{0,1}https?:\/\//i',
-        'eval_in_content'  => '/eval\s*\(\s*base64_decode/i',
-        'hidden_link'      => '/display\s*:\s*none.*<a\s+href/is',
-        'spam_keyword'     => '/\b(viagra|cialis|casino|poker|lottery|payday.?loan)\b/i',
-        'phishing_url'     => '/href\s*=\s*["\']{0,1}[^"\'\s]*\.(ru|cn|tk|ml|ga|cf)\//i',
-        'serialized_eval'  => '/s:\d+:["\']{0,1}.*eval\s*\(/i',
-        'serialized_b64'   => '/s:\d+:["\']{0,1}.*base64_decode/i',
-        'widget_redirect'  => '/header\s*\(\s*["\']{0,1}Location:/i',
-        'long_b64_in_db'   => '/[A-Za-z0-9+\/]{500,}={0,2}/',
-        'malicious_cron'   => '/(curl_exec|shell_exec|exec|system|passthru)\s*\(/i',
-        'post_js_redirect' => '/window\.location\s*=\s*["\']{0,1}https?:\/\//i',
-        'courtesy_page'    => '/Sito\s+in\s+manutenzione|Under\s+Construction|Hacked\s+by/i',
-        'siteurl_hijack'   => '/https?:\/\/[a-z0-9\-\.]+\.[a-z]{2,}/i',
-        'hidden_admin_form'=> '/<input[^>]+type\s*=\s*["\']{0,1}hidden["\']{0,1}[^>]+name\s*=\s*["\']{0,1}wp_/i',
+        'iframe_inject'    => '#<iframe[^>]+src\s*=\s*["']?https?://#i',
+        'script_inject'    => '#<script[^>]*src\s*=\s*["']?https?://#i',
+        'eval_in_content'  => '#eval\s*\(\s*base64_decode#i',
+        'hidden_link'      => '#display\s*:\s*none.{0,200}<a\s+href#is',
+        'spam_keyword'     => '#(viagra|cialis|casino|poker|lottery|payday.?loan)#i',
+        'phishing_url'     => '#href\s*=\s*["']?[^"'\s]*\.(ru|cn|tk|ml|ga|cf)/#i',
+        'serialized_eval'  => '#s:\d+:["'].*eval\s*\(#i',
+        'serialized_b64'   => '#s:\d+:["'].*base64_decode#i',
+        'widget_redirect'  => '#header\s*\(\s*["']?Location:#i',
+        'long_b64_in_db'   => '#[A-Za-z0-9+/]{500,}={0,2}#',
+        'malicious_cron'   => '#(curl_exec|shell_exec|exec|system|passthru)\s*\(#i',
+        'post_js_redirect' => '#window\.location\s*=\s*["']?https?://#i',
+        'courtesy_page'    => '#Sito\s+in\s+manutenzione|Under\s+Construction|Hacked\s+by#i',
+        'siteurl_hijack'   => '#https?://[a-z0-9\-\.]+\.[a-z]{2,}#i',
+        'hidden_admin_form'=> '#<input[^>]+type\s*=\s*["']?hidden["']?[^>]+name\s*=\s*["']?wp_#i',
     ];
 
     // Prima cerca nelle definizioni attive, poi nel fallback
@@ -652,4 +652,63 @@ function k2s_ajax_manual_remediate() {
         'processed'      => count( $unique_threats ),
         'message'        => "$total bonificati su " . count( $unique_threats ) . " minacce uniche.",
     ] );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  AJAX DEBUG — testa pattern su DB (solo admin, solo debug)
+// ═══════════════════════════════════════════════════════════════════
+add_action( 'wp_ajax_k2s_debug_remediate', 'k2s_ajax_debug_remediate' );
+
+function k2s_ajax_debug_remediate() {
+    check_ajax_referer( 'k2s_nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) wp_die();
+
+    global $wpdb;
+
+    $pattern_key = sanitize_text_field( $_POST['pattern_key'] ?? 'spam_keyword' );
+    $table       = $wpdb->options;
+    $column      = 'option_value';
+    $pk          = 'option_id';
+
+    $fallback_patterns = [
+        'iframe_inject'    => '#<iframe[^>]+src\s*=\s*["\']?https?://#i',
+        'script_inject'    => '#<script[^>]*src\s*=\s*["\']?https?://#i',
+        'eval_in_content'  => '#eval\s*\(\s*base64_decode#i',
+        'hidden_link'      => '#display\s*:\s*none.{0,200}<a\s+href#is',
+        'spam_keyword'     => '#\b(viagra|cialis|casino|poker|lottery|payday.?loan)\b#i',
+        'courtesy_page'    => '#Sito\s+in\s+manutenzione|Under\s+Construction|Hacked\s+by#i',
+        'long_b64_in_db'   => '#[A-Za-z0-9+/]{500,}={0,2}#',
+        'hidden_link'      => '#display\s*:\s*none.{0,200}<a\s+href#is',
+    ];
+
+    $regex = $fallback_patterns[ $pattern_key ] ?? null;
+    if ( ! $regex ) {
+        wp_send_json_error( "Pattern non trovato: $pattern_key" );
+    }
+
+    // Conta righe totali
+    $total_rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `$table`" );
+
+    // Trova righe che matchano
+    $rows = $wpdb->get_results( "SELECT `$pk`, `$column` FROM `$table` LIMIT 1000", ARRAY_A );
+    $matches = [];
+    foreach ( $rows as $row ) {
+        $val = $row[ $column ] ?? '';
+        if ( ! is_string( $val ) ) continue;
+        if ( @preg_match( $regex, $val ) ) {
+            $matches[] = [
+                'pk'      => $row[ $pk ],
+                'preview' => substr( $val, 0, 100 ),
+            ];
+        }
+    }
+
+    wp_send_json_success([
+        'pattern_key'   => $pattern_key,
+        'regex'         => $regex,
+        'total_rows'    => $total_rows,
+        'matches_found' => count( $matches ),
+        'matches'       => array_slice( $matches, 0, 5 ),
+        'regex_valid'   => @preg_match( $regex, '' ) !== false,
+    ]);
 }

@@ -129,4 +129,50 @@
         });
     });
 
+    // ── Debug pattern DB ─────────────────────────────────────────
+    $(document).on('click', '#k2s-debug-remediate', function () {
+        var $res = $('#k2s-remediate-result');
+        $res.hide().removeClass('ok threats');
+
+        var patterns = ['spam_keyword','long_b64_in_db','courtesy_page','hidden_link','iframe_inject'];
+        var results  = '';
+        var done     = 0;
+
+        $.each(patterns, function(i, pk) {
+            $.post(k2s_ajax.ajax_url, {
+                action:      'k2s_debug_remediate',
+                nonce:       k2s_ajax.nonce,
+                pattern_key: pk,
+            }, function(r) {
+                done++;
+                if (r.success) {
+                    var d = r.data;
+                    results += '[' + pk + ']
+';
+                    results += '  Regex valido  : ' + (d.regex_valid ? 'SI' : 'NO') + '
+';
+                    results += '  Righe totali  : ' + d.total_rows + '
+';
+                    results += '  Match trovati : ' + d.matches_found + '
+';
+                    if (d.matches_found > 0) {
+                        $.each(d.matches, function(j, m) {
+                            results += '  → PK=' + m.pk + ' | ' + m.preview.substr(0,60) + '...
+';
+                        });
+                    }
+                    results += '
+';
+                } else {
+                    results += '[' + pk + '] ERRORE: ' + (r.data || 'sconosciuto') + '
+
+';
+                }
+                if (done === patterns.length) {
+                    $res.addClass('ok').html('<pre style="margin:0;font-size:11px;">' + results + '</pre>').show();
+                }
+            });
+        });
+    });
+
 })(jQuery);

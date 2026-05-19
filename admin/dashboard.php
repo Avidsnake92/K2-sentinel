@@ -93,9 +93,15 @@ function k2s_icon($name, $size=16) {
                     Avvia la bonifica per mettere in quarantena i file e pulire il database automaticamente.
                 </div>
             </div>
-            <button id="k2s-remediate-now" class="k2s-btn" style="flex-shrink:0;">
-                Bonifica ora
-            </button>
+            <div style="display:flex;gap:8px;flex-shrink:0;">
+                <button id="k2s-remediate-now" class="k2s-btn">
+                    Bonifica ora
+                </button>
+                <button id="k2s-debug-remediate" class="k2s-btn k2s-btn--secondary k2s-btn--sm"
+                        title="Test pattern su DB" style="font-size:11px;">
+                    Debug
+                </button>
+            </div>
         </div>
         <div id="k2s-remediate-result" style="display:none;margin-top:14px;" class="k2s-result"></div>
     </div>

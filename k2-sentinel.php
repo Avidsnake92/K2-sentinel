@@ -3,14 +3,14 @@
  * Plugin Name: K2 Sentinel – Antivirus & Firewall
  * Plugin URI:  https://k2tech.it/k2-sentinel
  * Description: Antivirus, Firewall, 2FA, Traffic Monitor e Integrità Core per WordPress.
- * Version:     1.2.3
+ * Version:     1.2.4
  * Author:      K2Tech
  * License:     GPL-2.0+
  * Text Domain: k2-sentinel
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'K2_SENTINEL_VERSION', '1.2.3' );
+define( 'K2_SENTINEL_VERSION', '1.2.4' );
 define( 'K2_SENTINEL_PATH',    plugin_dir_path( __FILE__ ) );
 define( 'K2_SENTINEL_URL',     plugin_dir_url( __FILE__ ) );
 define( 'K2S_PATH',            K2_SENTINEL_PATH );
