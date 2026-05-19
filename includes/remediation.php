@@ -1,29 +1,46 @@
 <?php
 /**
  * K2 Sentinel – Remediation Engine
- *
- * Bonifica automatica:
- * - File PHP/HTML infetti → quarantena (spostati in wp-content/k2s-quarantine/)
- * - Database infetto     → backup record + pulizia valore
- * - Notifica email + log dopo ogni operazione
+ * Bonifica file (quarantena) e record DB (backup + pulizia).
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 define( 'K2S_QUARANTINE_DIR', WP_CONTENT_DIR . '/k2s-quarantine/' );
 
+// ─── Pattern fallback per la pulizia DB ───────────────────────────
+// Usati quando le definizioni remote non sono disponibili.
+// Usa virgolette doppie e delimitatore # per evitare conflitti.
+function k2s_get_fallback_db_patterns() {
+    return array(
+        "iframe_inject"    => "#<iframe[^>]+src#i",
+        "script_inject"    => "#<script[^>]*src\s*=\s*https?://#i",
+        "eval_in_content"  => "#eval\s*\(\s*base64_decode#i",
+        "hidden_link"      => "#display:\s*none#is",
+        "spam_keyword"     => "#viagra|cialis|casino|payday#i",
+        "phishing_url"     => "#\.(ru|cn|tk|ml|ga|cf)/#i",
+        "serialized_eval"  => "#s:\d+:.*eval\s*\(#i",
+        "serialized_b64"   => "#s:\d+:.*base64_decode#i",
+        "widget_redirect"  => "#Location:\s*https?://#i",
+        "long_b64_in_db"   => "#[A-Za-z0-9+/]{500,}={0,2}#",
+        "malicious_cron"   => "#curl_exec|shell_exec|passthru#i",
+        "post_js_redirect" => "#window\.location\s*=#i",
+        "courtesy_page"    => "#Sito in manutenzione|Under Construction|Hacked by#i",
+        "siteurl_hijack"   => "#https?://[a-z0-9\-\.]+\.[a-z]{2,}#i",
+        "hidden_admin_form"=> "#type.*hidden.*name.*wp_#is",
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════
-//  INIT – crea cartella quarantena protetta
+//  INIT quarantena
 // ═══════════════════════════════════════════════════════════════════
 function k2s_init_quarantine_dir() {
     if ( ! is_dir( K2S_QUARANTINE_DIR ) ) {
         wp_mkdir_p( K2S_QUARANTINE_DIR );
     }
-    // Proteggi la cartella con .htaccess
     $htaccess = K2S_QUARANTINE_DIR . '.htaccess';
     if ( ! file_exists( $htaccess ) ) {
         file_put_contents( $htaccess, "Order Deny,Allow\nDeny from all\n" );
     }
-    // index.php vuoto anti-listing
     $index = K2S_QUARANTINE_DIR . 'index.php';
     if ( ! file_exists( $index ) ) {
         file_put_contents( $index, '<?php // Silence is golden.' );
@@ -32,11 +49,11 @@ function k2s_init_quarantine_dir() {
 add_action( 'init', 'k2s_init_quarantine_dir' );
 
 // ═══════════════════════════════════════════════════════════════════
-//  ENTRY POINT – chiamato dallo scanner dopo ogni scansione
+//  ENTRY POINT — chiamato dopo ogni scansione
 // ═══════════════════════════════════════════════════════════════════
 function k2s_auto_remediate( array $threats ) {
-    if ( ! get_option( 'k2s_auto_remediation', 0 ) ) return;
-    if ( empty( $threats ) ) return;
+    if ( ! get_option( 'k2s_auto_remediation', 0 ) ) return [];
+    if ( empty( $threats ) ) return [];
 
     $report = [
         'quarantined' => [],
@@ -45,76 +62,71 @@ function k2s_auto_remediate( array $threats ) {
         'skipped'     => [],
     ];
 
+    // Tipi solo informativi — non bonificabili automaticamente
+    $skip_types = [
+        'core_modified_file', 'core_missing_file',
+        '2fa_failed', '2fa_success', 'brute_force',
+        'ghost_admin', 'suspicious_admin_registration',
+        'suspicious_cron', 'siteurl_hijack',
+        'remediation', 'definitions_update', 'hardening_updated',
+        'quarantined', 'db_cleaned', 'cron_removed',
+        'quarantine_restored', 'quarantine_deleted',
+    ];
+
+    // Tipi file → quarantena
+    $file_types = [
+        'php_malware', 'php_in_html', 'index_defacement',
+        'html_redirect', 'htaccess_redirect', 'htaccess_autoprepend',
+        'index_php_redirect', 'index_php_malware',
+        'unexpected_index_file', 'core_extra_file',
+    ];
+
+    // Tipi DB → backup + pulizia
+    $db_types = [
+        'db_injection', 'serialized_eval', 'serialized_b64',
+        'widget_redirect', 'post_js_redirect', 'courtesy_page',
+    ];
+
     foreach ( $threats as $threat ) {
         $type = $threat['type'] ?? '';
 
-        // ── Tipi da saltare (solo informativi, non bonificabili) ──
-        if ( in_array( $type, [
-            'core_modified_file', 'core_missing_file',
-            '2fa_failed', '2fa_success', 'brute_force',
-            'ghost_admin', 'suspicious_admin_registration',
-        ], true ) ) {
+        if ( in_array( $type, $skip_types, true ) ) {
             $report['skipped'][] = $threat['detail'] ?? $type;
             continue;
         }
 
-        // ── File extra in cartella core → quarantena ─────────────
-        if ( $type === 'core_extra_file' ) {
+        if ( in_array( $type, $file_types, true ) ) {
             $result = k2s_quarantine_file( $threat );
             if ( $result['ok'] ) {
                 $report['quarantined'][] = $result;
             } else {
                 $report['failed'][] = $result;
             }
+            continue;
+        }
 
-        // ── File PHP/HTML → quarantena ──────────────────────────
-        } elseif ( in_array( $type, [
-            'php_malware', 'php_in_html', 'index_defacement',
-            'html_redirect', 'htaccess_redirect', 'htaccess_autoprepend',
-            'index_php_redirect', 'index_php_malware', 'unexpected_index_file',
-        ], true ) ) {
-            $result = k2s_quarantine_file( $threat );
-            if ( $result['ok'] ) {
-                $report['quarantined'][] = $result;
-            } else {
-                $report['failed'][] = $result;
-            }
-
-        // ── DB injection → backup + pulizia ────────────────────
-        } elseif ( in_array( $type, [
-            'db_injection', 'siteurl_hijack', 'serialized_eval',
-            'serialized_b64', 'widget_redirect', 'long_b64_in_db',
-            'malicious_cron', 'post_js_redirect', 'courtesy_page',
-        ], true ) ) {
+        if ( in_array( $type, $db_types, true ) ) {
             $result = k2s_clean_db_threat( $threat );
             if ( $result['ok'] ) {
                 $report['db_cleaned'][] = $result;
             } else {
                 $report['failed'][] = $result;
             }
-
-        // ── Cron malevolo → rimozione ───────────────────────────
-        } elseif ( $type === 'suspicious_cron' || $type === 'malicious_cron_hook' ) {
-            $result = k2s_remove_malicious_cron( $threat );
-            if ( $result['ok'] ) {
-                $report['db_cleaned'][] = $result;
-            } else {
-                $report['failed'][] = $result;
-            }
-
-        } else {
-            $report['skipped'][] = $threat['detail'] ?? $type;
+            continue;
         }
+
+        // Tipo non gestito
+        $report['skipped'][] = "Tipo non gestito: $type";
     }
 
-    // Salva report + invia email
+    // Log e notifica
     $total = count( $report['quarantined'] ) + count( $report['db_cleaned'] );
     if ( $total > 0 || ! empty( $report['failed'] ) ) {
         update_option( 'k2s_last_remediation', [
             'time'   => current_time( 'mysql' ),
             'report' => $report,
         ] );
-        k2s_log( 'info', 'remediation', "Bonifica completata: {$total} risolti, " . count( $report['failed'] ) . " falliti." );
+        k2s_log( 'info', 'remediation', "Bonifica: {$total} risolti, " . count( $report['failed'] ) . " falliti." );
         k2s_send_remediation_email( $report );
     }
 
@@ -125,65 +137,67 @@ function k2s_auto_remediate( array $threats ) {
 //  QUARANTENA FILE
 // ═══════════════════════════════════════════════════════════════════
 function k2s_quarantine_file( array $threat ) {
-    // Estrai percorso dal dettaglio (es. "Pattern [x] in: wp-content/...")
-    $detail  = $threat['detail'] ?? '';
-    $rel_path = '';
+    $detail = $threat['detail'] ?? '';
 
-    // Supporta vari formati di dettaglio:
-    // "Pattern [x] in: wp-content/..."       → scanner generico
-    // "File non ufficiale trovato in cartella core: wp-includes/..."  → core_extra_file
-    // "File messo in quarantena: path → dest" → già bonificato
+    // Estrai percorso dal dettaglio in vari formati
+    $rel_path = '';
     if ( preg_match( '/cartella core:\s*(.+)$/i', $detail, $m ) ) {
         $rel_path = trim( $m[1] );
-    } elseif ( preg_match( '/in:\s*(.+?)(?:\s*\(|\s*→|$)/i', $detail, $m ) ) {
+    } elseif ( preg_match( '/in:\s*(.+?)(?:\s*\(|$)/i', $detail, $m ) ) {
         $rel_path = trim( $m[1] );
     } elseif ( preg_match( '/trovato.*?:\s*(.+?)(?:\s*\(|$)/i', $detail, $m ) ) {
         $rel_path = trim( $m[1] );
     }
 
     if ( empty( $rel_path ) ) {
-        return [ 'ok' => false, 'detail' => "Percorso non trovato in: $detail" ];
+        return [ 'ok' => false, 'detail' => "Percorso non trovato nel dettaglio: $detail" ];
     }
 
     $abs_path = ABSPATH . ltrim( $rel_path, '/' );
+    $real     = realpath( $abs_path );
 
-    // Verifica che il file esista e sia dentro ABSPATH (sicurezza path traversal)
-    $real = realpath( $abs_path );
-    if ( ! $real || strpos( $real, realpath( ABSPATH ) ) !== 0 ) {
-        return [ 'ok' => false, 'detail' => "File non trovato o path non valido: $rel_path" ];
+    if ( ! $real ) {
+        return [ 'ok' => false, 'detail' => "File non trovato: $rel_path" ];
+    }
+
+    // Sicurezza: deve essere dentro ABSPATH
+    if ( strpos( $real, realpath( ABSPATH ) ) !== 0 ) {
+        return [ 'ok' => false, 'detail' => "Path non valido: $rel_path" ];
+    }
+
+    // Non toccare il plugin stesso né la quarantena
+    $plugin_real     = realpath( K2S_PATH );
+    $quarantine_real = realpath( K2S_QUARANTINE_DIR );
+
+    if ( $plugin_real && strpos( $real, $plugin_real ) === 0 ) {
+        return [ 'ok' => false, 'detail' => "File del plugin — non bonificabile" ];
+    }
+    if ( $quarantine_real && strpos( $real, $quarantine_real ) === 0 ) {
+        return [ 'ok' => false, 'detail' => "File già in quarantena" ];
     }
 
     if ( ! is_readable( $real ) ) {
         return [ 'ok' => false, 'detail' => "File non leggibile: $rel_path" ];
     }
 
-    // Non mettere in quarantena i propri file del plugin né la quarantena stessa
-    if ( strpos( $real, K2S_QUARANTINE_DIR ) === 0 ) {
-        return [ 'ok' => false, 'detail' => "File già in quarantena." ];
-    }
-    if ( strpos( $real, realpath( K2S_PATH ) ) === 0 ) {
-        return [ 'ok' => false, 'detail' => "File del plugin K2 Sentinel — non bonificabile." ];
-    }
-
     k2s_init_quarantine_dir();
 
-    // Nome file in quarantena: timestamp + hash per evitare collisioni
-    $safe_name  = date( 'Ymd-His' ) . '_' . md5( $real ) . '_' . basename( $real ) . '.quarantine';
-    $dest       = K2S_QUARANTINE_DIR . $safe_name;
+    $safe_name = date( 'Ymd-His' ) . '_' . substr( md5( $real ), 0, 8 ) . '_' . basename( $real ) . '.quarantine';
+    $dest      = K2S_QUARANTINE_DIR . $safe_name;
 
-    // Salva metadata accanto al file
+    // Metadata
     $meta = [
-        'original_path' => $real,
-        'quarantined_at'=> current_time( 'mysql' ),
-        'threat_type'   => $threat['type'],
-        'threat_detail' => $detail,
-        'sha256'        => hash_file( 'sha256', $real ),
+        'original_path'  => $real,
+        'quarantined_at' => current_time( 'mysql' ),
+        'threat_type'    => $threat['type'] ?? '',
+        'threat_detail'  => $detail,
+        'sha256'         => hash_file( 'sha256', $real ),
     ];
     file_put_contents( $dest . '.meta.json', json_encode( $meta, JSON_PRETTY_PRINT ) );
 
-    // Sposta il file (rename = atomico, niente copia+delete)
-    if ( ! @rename( $real, $dest ) ) {
-        // Fallback: copia + cancella
+    // Sposta il file
+    $moved = @rename( $real, $dest );
+    if ( ! $moved ) {
         if ( @copy( $real, $dest ) ) {
             @unlink( $real );
         } else {
@@ -191,7 +205,7 @@ function k2s_quarantine_file( array $threat ) {
         }
     }
 
-    k2s_log( 'critical', 'quarantined', "File messo in quarantena: $rel_path → $safe_name" );
+    k2s_log( 'critical', 'quarantined', "File in quarantena: $rel_path" );
 
     return [
         'ok'       => true,
@@ -209,16 +223,15 @@ function k2s_clean_db_threat( array $threat ) {
     global $wpdb;
     $detail = $threat['detail'] ?? '';
 
-    // Formato: "Pattern [xxx] trovato in QUALSIASI_PREFIX_tablename.column"
-    // Funziona con qualsiasi prefisso WP (wp_, p00ZTB_, ecc.)
+    // Formato atteso: "Pattern [xxx] trovato in TABLE.COLUMN"
     if ( ! preg_match( '/trovato in\s+(\S+)\.(\S+)/i', $detail, $m ) ) {
-        return [ 'ok' => false, 'detail' => "Tabella/colonna non parsabile: $detail" ];
+        return [ 'ok' => false, 'detail' => "Formato non parsabile: $detail" ];
     }
 
     $table_raw = $m[1];
     $column    = $m[2];
 
-    // Mappa nome base → nome completo con prefisso WP reale
+    // Mappa nome base → tabella WP reale (gestisce qualsiasi prefisso)
     $base_map = [
         'posts'       => $wpdb->posts,
         'postmeta'    => $wpdb->postmeta,
@@ -227,7 +240,6 @@ function k2s_clean_db_threat( array $threat ) {
         'commentmeta' => $wpdb->commentmeta,
     ];
 
-    // Risolvi prefisso personalizzato: p00ZTB_options → options → $wpdb->options
     $table = null;
     foreach ( $base_map as $base => $full ) {
         if ( substr( $table_raw, -strlen( $base ) ) === $base ) {
@@ -240,93 +252,81 @@ function k2s_clean_db_threat( array $threat ) {
         return [ 'ok' => false, 'detail' => "Tabella non gestita: $table_raw" ];
     }
 
-    // Estrai il pattern_key dal dettaglio
+    // Ricava pattern_key
     $pattern_key = '';
     if ( preg_match( '/Pattern \[([^\]]+)\]/i', $detail, $pm ) ) {
         $pattern_key = $pm[1];
     }
 
-        // Mappa fallback hardcoded — pattern senza conflitti di virgolette
-    $q  = chr(34) . chr(39); // " e ' come char codes
-    $fallback_patterns = array(
-        "iframe_inject"    => "#<iframe[^>]+src#i",
-        "script_inject"    => "#<script[^>]*src\s*=\s*https?://#i",
-        "eval_in_content"  => "#eval\s*\(\s*base64_decode#i",
-        "hidden_link"      => "#display:\s*none#is",
-        "spam_keyword"     => "#viagra|cialis|casino|payday#i",
-        "phishing_url"     => "#\.(?:ru|cn|tk|ml|ga|cf)/#i",
-        "serialized_eval"  => "#s:\d+:.*eval\s*\(#i",
-        "serialized_b64"   => "#s:\d+:.*base64_decode#i",
-        "widget_redirect"  => "#Location:\s*https?://#i",
-        "long_b64_in_db"   => "#[A-Za-z0-9+/]{500,}={0,2}#",
-        "malicious_cron"   => "#curl_exec|shell_exec|passthru#i",
-        "post_js_redirect" => "#window\.location\s*=#i",
-        "courtesy_page"    => "#Sito in manutenzione|Under Construction|Hacked by#i",
-        "siteurl_hijack"   => "#https?://[a-z0-9\-\.]+\.[a-z]{2,}#i",
-        "hidden_admin_form"=> "#type.*hidden.*name.*wp_#is",
-    );
-
-    // Prima cerca nelle definizioni attive, poi nel fallback
-    $defs        = k2s_get_active_definitions();
-    $db_patterns = $defs['db_patterns'] ?? [];
-    $regex       = $db_patterns[ $pattern_key ] ?? $fallback_patterns[ $pattern_key ] ?? null;
-
+    // Cerca il regex: prima nelle definizioni attive, poi nel fallback
+    $regex = null;
+    if ( function_exists( 'k2s_get_active_definitions' ) ) {
+        $defs        = k2s_get_active_definitions();
+        $db_patterns = $defs['db_patterns'] ?? [];
+        $regex       = $db_patterns[ $pattern_key ] ?? null;
+    }
     if ( ! $regex ) {
-        return [ 'ok' => false, 'detail' => "Pattern regex non trovato per: [$pattern_key] — aggiungerlo alle definizioni" ];
+        $fallback = k2s_get_fallback_db_patterns();
+        $regex    = $fallback[ $pattern_key ] ?? null;
     }
 
-    // Determina la colonna chiave primaria
-    $pk = k2s_get_primary_key( $table );
+    if ( ! $regex ) {
+        return [ 'ok' => false, 'detail' => "Pattern regex non trovato per: [$pattern_key]" ];
+    }
+
+    // Verifica che il regex sia valido
+    if ( @preg_match( $regex, '' ) === false ) {
+        return [ 'ok' => false, 'detail' => "Regex non valido per: [$pattern_key]" ];
+    }
+
+    // Colonna PK
+    $pk_map = [
+        $wpdb->posts       => 'ID',
+        $wpdb->postmeta    => 'meta_id',
+        $wpdb->options     => 'option_id',
+        $wpdb->comments    => 'comment_ID',
+        $wpdb->commentmeta => 'meta_id',
+    ];
+    $pk = $pk_map[ $table ] ?? null;
     if ( ! $pk ) {
         return [ 'ok' => false, 'detail' => "PK non trovata per: $table" ];
     }
 
-    // Leggi tutte le righe infette
-    $rows = $wpdb->get_results(
-        "SELECT `$pk`, `$column` FROM `$table`",
-        ARRAY_A
-    );
-
-    $cleaned = 0;
+    // Crea tabella backup se non esiste
     $backup_table = $wpdb->prefix . 'k2s_db_backup';
     k2s_ensure_backup_table( $backup_table );
 
+    // Leggi e pulisci le righe
+    $rows    = $wpdb->get_results( "SELECT `$pk`, `$column` FROM `$table`", ARRAY_A );
+    $cleaned = 0;
+
     foreach ( $rows as $row ) {
-        $value = $row[ $column ] ?? '';
-        if ( ! is_string( $value ) || ! preg_match( $regex, $value ) ) continue;
+        $val = $row[ $column ] ?? '';
+        if ( ! is_string( $val ) || strlen( $val ) < 5 ) continue;
+        if ( ! @preg_match( $regex, $val ) ) continue;
 
         $pk_val = $row[ $pk ];
 
-        // 1. Backup del record originale
+        // Backup
         $wpdb->insert( $backup_table, [
             'backup_time'    => current_time( 'mysql' ),
             'source_table'   => $table,
             'source_column'  => $column,
-            'source_pk'      => $pk_val,
-            'original_value' => $value,
-            'threat_type'    => $threat['type'],
+            'source_pk'      => (string) $pk_val,
+            'original_value' => $val,
+            'threat_type'    => $threat['type'] ?? '',
             'pattern_key'    => $pattern_key,
         ] );
 
-        // 2. Pulizia: rimuovi il pattern malevolo dal valore
-        $clean_value = k2s_strip_malicious_content( $value, $regex, $pattern_key );
+        // Pulizia: rimuove il match dal valore
+        $clean_val = @preg_replace( $regex, '', $val );
+        if ( $clean_val === null ) $clean_val = '';
 
-        // 3. Aggiorna il record
-        $wpdb->update(
-            $table,
-            [ $column => $clean_value ],
-            [ $pk     => $pk_val ],
-            [ '%s' ],
-            [ '%s' ]
-        );
-
+        $wpdb->update( $table, [ $column => $clean_val ], [ $pk => $pk_val ], [ '%s' ], [ '%s' ] );
         $cleaned++;
-        k2s_log( 'warning', 'db_cleaned', "Pulita $table.$column (PK=$pk_val) pattern [$pattern_key]" );
     }
 
-    if ( $cleaned === 0 ) {
-        return [ 'ok' => false, 'detail' => "Nessuna riga trovata da pulire in $table.$column" ];
-    }
+    k2s_log( 'info', 'db_cleaned', "Pulite $cleaned righe in {$table}.{$column} pattern [$pattern_key]" );
 
     return [
         'ok'      => true,
@@ -338,131 +338,14 @@ function k2s_clean_db_threat( array $threat ) {
     ];
 }
 
-// ─── Rimuove il contenuto malevolo da un valore stringa ──────────
-function k2s_strip_malicious_content( $value, $regex, $pattern_key ) {
-    // Pattern che sostituiamo con stringa vuota (iniezioni aggiunte)
-    $strip_patterns = [
-        'iframe_inject', 'script_inject', 'eval_in_content',
-        'hidden_link', 'spam_keyword', 'post_js_redirect',
-        'courtesy_page', 'widget_redirect', 'serialized_eval', 'serialized_b64',
-    ];
-
-    if ( in_array( $pattern_key, $strip_patterns, true ) ) {
-        // Rimuove il blocco malevolo con preg_replace
-        return preg_replace( $regex, '', $value );
-    }
-
-    // Per long_b64_in_db e pattern che coprono tutto il valore: svuota
-    if ( in_array( $pattern_key, [ 'long_b64_in_db', 'malicious_cron', 'phishing_url' ], true ) ) {
-        return '';
-    }
-
-    // Default: rimuovi con regex
-    return preg_replace( $regex, '', $value );
-}
-
-// ─── Rimuove cron job malevoli ────────────────────────────────────
-function k2s_remove_malicious_cron( array $threat ) {
-    $detail = $threat['detail'] ?? '';
-
-    if ( ! preg_match( '/\[([^\]]+)\]/', $detail, $m ) ) {
-        return [ 'ok' => false, 'detail' => "Hook non trovato in: $detail" ];
-    }
-
-    $hook = $m[1];
-    wp_clear_scheduled_hook( $hook );
-    k2s_log( 'warning', 'cron_removed', "Cron job malevolo rimosso: [$hook]" );
-
-    return [
-        'ok'    => true,
-        'type'  => 'cron',
-        'hook'  => $hook,
-        'detail'=> $detail,
-    ];
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  EMAIL DI NOTIFICA
-// ═══════════════════════════════════════════════════════════════════
-function k2s_send_remediation_email( array $report ) {
-    if ( ! get_option( 'k2s_email_alerts', 0 ) ) return;
-
-    $to      = get_option( 'k2s_alert_email', get_option( 'admin_email' ) );
-    $subject = '[K2 Sentinel] Bonifica automatica completata – ' . get_bloginfo( 'name' );
-
-    $q_count  = count( $report['quarantined'] );
-    $db_count = count( $report['db_cleaned'] );
-    $f_count  = count( $report['failed'] );
-
-    $body  = "K2 Sentinel ha completato una bonifica automatica sul sito " . home_url() . "\n";
-    $body .= "Data/ora: " . current_time( 'mysql' ) . "\n\n";
-    $body .= "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    $body .= "RIEPILOGO\n";
-    $body .= "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    $body .= "📦 File messi in quarantena : $q_count\n";
-    $body .= "🗄️  Record DB puliti         : $db_count\n";
-    $body .= "❌ Operazioni fallite        : $f_count\n\n";
-
-    if ( ! empty( $report['quarantined'] ) ) {
-        $body .= "FILE IN QUARANTENA:\n";
-        foreach ( $report['quarantined'] as $r ) {
-            $body .= "  • " . ( $r['original'] ?? '?' ) . "\n";
-            $body .= "    → " . ( $r['dest'] ?? '?' ) . "\n";
-        }
-        $body .= "\n";
-    }
-
-    if ( ! empty( $report['db_cleaned'] ) ) {
-        $body .= "RECORD DB PULITI:\n";
-        foreach ( $report['db_cleaned'] as $r ) {
-            if ( $r['type'] === 'db' ) {
-                $body .= "  • {$r['table']}.{$r['column']} – {$r['cleaned']} riga/e\n";
-            } elseif ( $r['type'] === 'cron' ) {
-                $body .= "  • Cron rimosso: [{$r['hook']}]\n";
-            }
-        }
-        $body .= "\n";
-    }
-
-    if ( ! empty( $report['failed'] ) ) {
-        $body .= "OPERAZIONI FALLITE (richiedono intervento manuale):\n";
-        foreach ( $report['failed'] as $r ) {
-            $body .= "  ⚠️  " . ( $r['detail'] ?? json_encode( $r ) ) . "\n";
-        }
-        $body .= "\n";
-    }
-
-    $body .= "I file in quarantena si trovano in:\n";
-    $body .= str_replace( ABSPATH, '/', K2S_QUARANTINE_DIR ) . "\n\n";
-    $body .= "Puoi ripristinarli dalla sezione Quarantena nel pannello K2 Sentinel.\n\n";
-    $body .= "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    $body .= "K2 Sentinel – by K2Tech | " . home_url( '/wp-admin' ) . "\n";
-
-    wp_mail( $to, $subject, $body );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  HELPERS
-// ═══════════════════════════════════════════════════════════════════
-function k2s_get_primary_key( $table ) {
-    global $wpdb;
-    $pk_map = [
-        $wpdb->posts       => 'ID',
-        $wpdb->postmeta    => 'meta_id',
-        $wpdb->options     => 'option_id',
-        $wpdb->comments    => 'comment_ID',
-        $wpdb->commentmeta => 'meta_id',
-    ];
-    return $pk_map[ $table ] ?? null;
-}
-
+// ─── Tabella backup DB ────────────────────────────────────────────
 function k2s_ensure_backup_table( $table ) {
     global $wpdb;
-    $exists = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $table ) );
-    if ( $exists ) return;
+    if ( $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $table ) ) ) return;
 
     $charset = $wpdb->get_charset_collate();
-    $sql = "CREATE TABLE $table (
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    dbDelta( "CREATE TABLE $table (
         id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         backup_time    DATETIME        NOT NULL,
         source_table   VARCHAR(100)    NOT NULL,
@@ -471,79 +354,56 @@ function k2s_ensure_backup_table( $table ) {
         original_value LONGTEXT        NOT NULL,
         threat_type    VARCHAR(60)     NOT NULL,
         pattern_key    VARCHAR(60)     NOT NULL,
-        PRIMARY KEY (id),
-        KEY backup_time (backup_time)
-    ) $charset;";
-
-    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-    dbDelta( $sql );
+        PRIMARY KEY (id)
+    ) $charset;" );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  AJAX – ripristina file dalla quarantena
+//  EMAIL NOTIFICA
 // ═══════════════════════════════════════════════════════════════════
-add_action( 'wp_ajax_k2s_restore_quarantine', 'k2s_ajax_restore_quarantine' );
+function k2s_send_remediation_email( array $report ) {
+    if ( ! get_option( 'k2s_email_alerts', 0 ) ) return;
 
-function k2s_ajax_restore_quarantine() {
-    check_ajax_referer( 'k2s_nonce', 'nonce' );
-    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+    $to      = get_option( 'k2s_alert_email', get_option( 'admin_email' ) );
+    $subject = '[K2 Sentinel] Bonifica completata – ' . get_bloginfo( 'name' );
 
-    $filename = sanitize_file_name( $_POST['filename'] ?? '' );
-    $src      = K2S_QUARANTINE_DIR . $filename;
-    $meta_f   = $src . '.meta.json';
+    $q  = count( $report['quarantined'] );
+    $d  = count( $report['db_cleaned'] );
+    $f  = count( $report['failed'] );
 
-    if ( ! file_exists( $src ) || ! file_exists( $meta_f ) ) {
-        wp_send_json_error( 'File non trovato.' );
+    $body  = "K2 Sentinel – Bonifica automatica\n";
+    $body .= home_url() . " | " . current_time( 'mysql' ) . "\n\n";
+    $body .= "File in quarantena : $q\n";
+    $body .= "Record DB puliti   : $d\n";
+    $body .= "Falliti            : $f\n\n";
+
+    if ( ! empty( $report['quarantined'] ) ) {
+        $body .= "FILE IN QUARANTENA:\n";
+        foreach ( $report['quarantined'] as $r ) {
+            $body .= "  • " . ( $r['original'] ?? '?' ) . "\n";
+        }
+        $body .= "\n";
     }
 
-    $meta = json_decode( file_get_contents( $meta_f ), true );
-    $dest = $meta['original_path'] ?? '';
-
-    if ( empty( $dest ) ) {
-        wp_send_json_error( 'Percorso originale non trovato nel metadata.' );
+    if ( ! empty( $report['failed'] ) ) {
+        $body .= "FALLITI (intervento manuale necessario):\n";
+        foreach ( $report['failed'] as $r ) {
+            $body .= "  ! " . ( $r['detail'] ?? '?' ) . "\n";
+        }
     }
 
-    // Ricrea la cartella se necessario
-    $dir = dirname( $dest );
-    if ( ! is_dir( $dir ) ) wp_mkdir_p( $dir );
-
-    if ( @rename( $src, $dest ) ) {
-        @unlink( $meta_f );
-        k2s_log( 'info', 'quarantine_restored', "File ripristinato: $dest" );
-        wp_send_json_success( [ 'restored_to' => str_replace( ABSPATH, '', $dest ) ] );
-    } else {
-        wp_send_json_error( 'Impossibile ripristinare il file.' );
-    }
+    $body .= "\nPannello: " . admin_url( 'admin.php?page=k2-sentinel' ) . "\n";
+    wp_mail( $to, $subject, $body );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  AJAX – elimina definitivamente dalla quarantena
-// ═══════════════════════════════════════════════════════════════════
-add_action( 'wp_ajax_k2s_delete_quarantine', 'k2s_ajax_delete_quarantine' );
-
-function k2s_ajax_delete_quarantine() {
-    check_ajax_referer( 'k2s_nonce', 'nonce' );
-    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
-
-    $filename = sanitize_file_name( $_POST['filename'] ?? '' );
-    $src      = K2S_QUARANTINE_DIR . $filename;
-    $meta_f   = $src . '.meta.json';
-
-    @unlink( $src );
-    @unlink( $meta_f );
-
-    k2s_log( 'info', 'quarantine_deleted', "File eliminato definitivamente: $filename" );
-    wp_send_json_success();
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET FILES IN QUARANTENA
+//  QUARANTENA — utility
 // ═══════════════════════════════════════════════════════════════════
 function k2s_get_quarantine_files() {
     $files = [];
     if ( ! is_dir( K2S_QUARANTINE_DIR ) ) return $files;
 
-    foreach ( glob( K2S_QUARANTINE_DIR . '*.quarantine' ) as $f ) {
+    foreach ( glob( K2S_QUARANTINE_DIR . '*.quarantine' ) ?: [] as $f ) {
         $meta_f = $f . '.meta.json';
         $meta   = file_exists( $meta_f ) ? json_decode( file_get_contents( $meta_f ), true ) : [];
         $files[] = [
@@ -555,164 +415,119 @@ function k2s_get_quarantine_files() {
             'threat_detail'  => $meta['threat_detail'] ?? '?',
         ];
     }
-
-    usort( $files, fn( $a, $b ) => strcmp( $b['quarantined_at'], $a['quarantined_at'] ) );
+    usort( $files, function( $a, $b ) { return strcmp( $b['quarantined_at'], $a['quarantined_at'] ); } );
     return $files;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  GET BACKUP DB
-// ═══════════════════════════════════════════════════════════════════
 function k2s_get_db_backups( $limit = 50 ) {
     global $wpdb;
     $table = $wpdb->prefix . 'k2s_db_backup';
-    $exists = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $table ) );
-    if ( ! $exists ) return [];
-    return $wpdb->get_results(
-        $wpdb->prepare( "SELECT * FROM $table ORDER BY backup_time DESC LIMIT %d", $limit )
-    );
+    if ( ! $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $table ) ) ) return [];
+    return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM $table ORDER BY backup_time DESC LIMIT %d", $limit ) );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  AJAX – bonifica manuale (agisce sui log esistenti)
-// ═══════════════════════════════════════════════════════════════════
-add_action( 'wp_ajax_k2s_manual_remediate', 'k2s_ajax_manual_remediate' );
-
-function k2s_ajax_manual_remediate() {
+// ─── AJAX: ripristina dalla quarantena ────────────────────────────
+add_action( 'wp_ajax_k2s_restore_quarantine', function() {
     check_ajax_referer( 'k2s_nonce', 'nonce' );
-    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+    if ( ! current_user_can( 'manage_options' ) ) wp_die();
 
-    global $wpdb;
-    $table = $wpdb->prefix . 'sentinel_log';
+    $filename = sanitize_file_name( $_POST['filename'] ?? '' );
+    $src      = K2S_QUARANTINE_DIR . $filename;
+    $meta_f   = $src . '.meta.json';
 
-    // Tipi solo informativi — non bonificabili
-    $skip_types = [
-        'core_modified_file', 'core_missing_file',
-        '2fa_failed', '2fa_success', 'brute_force',
-        'remediation', 'definitions_update', 'hardening_updated',
-        'quarantined', 'db_cleaned', 'cron_removed',
-        'quarantine_restored', 'quarantine_deleted',
-        'ghost_admin', 'suspicious_admin_registration',
-        'core_integrity', 'suspicious_cron',
-    ];
+    if ( ! file_exists( $src ) ) { wp_send_json_error( 'File non trovato.' ); }
 
-    $skip_in = implode( ',', array_map( fn($t) => "'$t'", $skip_types ) );
+    $meta = file_exists( $meta_f ) ? json_decode( file_get_contents( $meta_f ), true ) : [];
+    $dest = $meta['original_path'] ?? '';
 
-    // Leggi le ultime minacce bonificabili dal log
-    $logs = $wpdb->get_results(
-        "SELECT * FROM $table
-         WHERE level IN ('critical','warning')
-         AND type NOT IN ($skip_in)
-         ORDER BY log_time DESC
-         LIMIT 500",
-        ARRAY_A
-    );
+    if ( empty( $dest ) ) { wp_send_json_error( 'Percorso originale non trovato.' ); }
 
-    if ( empty( $logs ) ) {
-        wp_send_json_success( [
-            'message'  => 'Nessuna minaccia bonificabile trovata nel log.',
-            'total'    => 0,
-            'hint'     => 'Avvia una scansione manuale per rilevare nuove minacce.',
-        ] );
-        return;
+    $dir = dirname( $dest );
+    if ( ! is_dir( $dir ) ) wp_mkdir_p( $dir );
+
+    if ( @rename( $src, $dest ) ) {
+        @unlink( $meta_f );
+        k2s_log( 'info', 'quarantine_restored', "Ripristinato: $dest" );
+        wp_send_json_success( [ 'restored_to' => str_replace( ABSPATH, '', $dest ) ] );
+    } else {
+        wp_send_json_error( 'Impossibile ripristinare.' );
     }
+} );
 
-    // Deduplicazione per tipo+dettaglio
-    $seen           = [];
-    $unique_threats = [];
-    foreach ( $logs as $log ) {
-        $key = $log['type'] . '||' . $log['detail'];
-        if ( ! isset( $seen[ $key ] ) ) {
-            $seen[ $key ]     = true;
-            $unique_threats[] = [
-                'level'  => $log['level'],
-                'type'   => $log['type'],
-                'detail' => $log['detail'],
-            ];
-        }
-    }
+// ─── AJAX: elimina dalla quarantena ──────────────────────────────
+add_action( 'wp_ajax_k2s_delete_quarantine', function() {
+    check_ajax_referer( 'k2s_nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) wp_die();
 
-    $report = k2s_auto_remediate( $unique_threats );
+    $filename = sanitize_file_name( $_POST['filename'] ?? '' );
+    @unlink( K2S_QUARANTINE_DIR . $filename );
+    @unlink( K2S_QUARANTINE_DIR . $filename . '.meta.json' );
+    k2s_log( 'info', 'quarantine_deleted', "Eliminato: $filename" );
+    wp_send_json_success();
+} );
 
-    $quarantined = count( $report['quarantined'] ?? [] );
-    $db_cleaned  = count( $report['db_cleaned']  ?? [] );
-    $failed      = count( $report['failed']      ?? [] );
-    $skipped     = count( $report['skipped']     ?? [] );
-    $total       = $quarantined + $db_cleaned;
-
-    // Dettaglio falliti per debug
-    $failed_details = [];
-    foreach ( $report['failed'] ?? [] as $f ) {
-        $failed_details[] = $f['detail'] ?? json_encode( $f );
-    }
-
-    wp_send_json_success( [
-        'total'          => $total,
-        'quarantined'    => $quarantined,
-        'db_cleaned'     => $db_cleaned,
-        'failed'         => $failed,
-        'failed_details' => $failed_details,
-        'skipped'        => $skipped,
-        'processed'      => count( $unique_threats ),
-        'message'        => "$total bonificati su " . count( $unique_threats ) . " minacce uniche.",
-    ] );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  AJAX DEBUG — testa pattern su DB (solo admin, solo debug)
-// ═══════════════════════════════════════════════════════════════════
-add_action( 'wp_ajax_k2s_debug_remediate', 'k2s_ajax_debug_remediate' );
-
-function k2s_ajax_debug_remediate() {
+// ─── AJAX: bonifica manuale da log ────────────────────────────────
+add_action( 'wp_ajax_k2s_manual_remediate', function() {
     check_ajax_referer( 'k2s_nonce', 'nonce' );
     if ( ! current_user_can( 'manage_options' ) ) wp_die();
 
     global $wpdb;
+    $log_table = $wpdb->prefix . 'sentinel_log';
 
-    $pattern_key = sanitize_text_field( $_POST['pattern_key'] ?? 'spam_keyword' );
-    $table       = $wpdb->options;
-    $column      = 'option_value';
-    $pk          = 'option_id';
+    // Tipi non bonificabili
+    $skip = [ 'core_modified_file','core_missing_file','2fa_failed','2fa_success',
+               'brute_force','remediation','definitions_update','hardening_updated',
+               'quarantined','db_cleaned','cron_removed','quarantine_restored',
+               'quarantine_deleted','ghost_admin','suspicious_admin_registration',
+               'core_integrity','suspicious_cron','siteurl_hijack' ];
 
-    $fallback_patterns = [
-        'iframe_inject'    => '#<iframe[^>]+src\s*=\s*["\']?https?://#i',
-        'script_inject'    => '#<script[^>]*src\s*=\s*["\']?https?://#i',
-        'eval_in_content'  => '#eval\s*\(\s*base64_decode#i',
-        'hidden_link'      => '#display\s*:\s*none.{0,200}<a\s+href#is',
-        'spam_keyword'     => '#\b(viagra|cialis|casino|poker|lottery|payday.?loan)\b#i',
-        'courtesy_page'    => '#Sito\s+in\s+manutenzione|Under\s+Construction|Hacked\s+by#i',
-        'long_b64_in_db'   => '#[A-Za-z0-9+/]{500,}={0,2}#',
-        'hidden_link'      => '#display\s*:\s*none.{0,200}<a\s+href#is',
-    ];
+    $skip_sql = implode( ',', array_map( function($t) { return "'" . esc_sql($t) . "'"; }, $skip ) );
 
-    $regex = $fallback_patterns[ $pattern_key ] ?? null;
-    if ( ! $regex ) {
-        wp_send_json_error( "Pattern non trovato: $pattern_key" );
+    $logs = $wpdb->get_results(
+        "SELECT level, type, detail FROM $log_table
+         WHERE level IN ('critical','warning')
+         AND type NOT IN ($skip_sql)
+         ORDER BY log_time DESC LIMIT 500",
+        ARRAY_A
+    );
+
+    if ( empty( $logs ) ) {
+        wp_send_json_success( [ 'total' => 0, 'quarantined' => 0, 'db_cleaned' => 0, 'failed' => 0, 'skipped' => 0, 'processed' => 0, 'message' => 'Nessuna minaccia bonificabile nel log.' ] );
+        return;
     }
 
-    // Conta righe totali
-    $total_rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `$table`" );
-
-    // Trova righe che matchano
-    $rows = $wpdb->get_results( "SELECT `$pk`, `$column` FROM `$table` LIMIT 1000", ARRAY_A );
-    $matches = [];
-    foreach ( $rows as $row ) {
-        $val = $row[ $column ] ?? '';
-        if ( ! is_string( $val ) ) continue;
-        if ( @preg_match( $regex, $val ) ) {
-            $matches[] = [
-                'pk'      => $row[ $pk ],
-                'preview' => substr( $val, 0, 100 ),
-            ];
+    // Deduplicazione
+    $seen   = [];
+    $unique = [];
+    foreach ( $logs as $log ) {
+        $key = $log['type'] . '||' . $log['detail'];
+        if ( ! isset( $seen[$key] ) ) {
+            $seen[$key] = true;
+            $unique[]   = $log;
         }
     }
 
-    wp_send_json_success([
-        'pattern_key'   => $pattern_key,
-        'regex'         => $regex,
-        'total_rows'    => $total_rows,
-        'matches_found' => count( $matches ),
-        'matches'       => array_slice( $matches, 0, 5 ),
-        'regex_valid'   => @preg_match( $regex, '' ) !== false,
-    ]);
-}
+    // Forza auto_remediation ON per questo AJAX
+    $prev = get_option( 'k2s_auto_remediation', 0 );
+    update_option( 'k2s_auto_remediation', 1 );
+    $report = k2s_auto_remediate( $unique );
+    update_option( 'k2s_auto_remediation', $prev );
+
+    $q = count( $report['quarantined'] ?? [] );
+    $d = count( $report['db_cleaned']  ?? [] );
+    $f = count( $report['failed']      ?? [] );
+    $s = count( $report['skipped']     ?? [] );
+
+    $failed_details = array_map( function($r) { return $r['detail'] ?? json_encode($r); }, $report['failed'] ?? [] );
+
+    wp_send_json_success( [
+        'total'          => $q + $d,
+        'quarantined'    => $q,
+        'db_cleaned'     => $d,
+        'failed'         => $f,
+        'failed_details' => $failed_details,
+        'skipped'        => $s,
+        'processed'      => count( $unique ),
+        'message'        => ( $q + $d ) . " bonificati su " . count( $unique ) . " minacce uniche.",
+    ] );
+} );
